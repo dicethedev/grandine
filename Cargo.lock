@@ -5936,6 +5936,7 @@ dependencies = [
  "parking_lot",
  "prometheus_metrics",
  "pubkey_cache",
+ "rayon",
  "reqwest 0.13.2",
  "scc 3.6.11",
  "serde",
