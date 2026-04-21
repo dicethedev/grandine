@@ -77,7 +77,7 @@ use types::{
         primitives::{Epoch, ExecutionBlockHash, Gwei, H256, Slot, ValidatorIndex},
     },
     preset::Preset,
-    traits::{BeaconState as _, PostGloasBeaconState, SignedBeaconBlock as _},
+    traits::{BeaconState as _, SignedBeaconBlock as _},
 };
 use unwrap_none::UnwrapNone as _;
 
@@ -2813,28 +2813,11 @@ impl<P: Preset, S: Storage<P>> Store<P, S> {
 
         // [REJECT] The message's validator index is within the payload committee in get_ptc(state, data.slot).
         // The state is the head state corresponding to processing the block up to the current slot as determined by the fork choice.
-        let result = match state.as_ref() {
-            BeaconState::Phase0(_)
-            | BeaconState::Altair(_)
-            | BeaconState::Bellatrix(_)
-            | BeaconState::Capella(_)
-            | BeaconState::Deneb(_)
-            | BeaconState::Electra(_)
-            | BeaconState::Fulu(_) => {
-                return Err(
-                    PayloadAttestationValidationError::PayloadAttestationForPreGloasBlock {
-                        payload_attestation: Box::new(payload_attestation),
-                    },
-                );
-            }
-            BeaconState::Gloas(state) => self.attesting_indices_positions(
-                state,
-                &payload_attestation.item,
-                !skip_signatures_verification && payload_attestation.origin.verify_signatures(),
-            ),
-        };
-
-        let attesting_indices_positions = match result {
+        let attesting_indices_positions = match self.attesting_indices_positions(
+            state,
+            &payload_attestation.item,
+            !skip_signatures_verification && payload_attestation.origin.verify_signatures(),
+        ) {
             Ok(indices) => indices,
             Err(source) => {
                 return Err(PayloadAttestationValidationError::Other {
@@ -2852,7 +2835,7 @@ impl<P: Preset, S: Storage<P>> Store<P, S> {
 
     fn attesting_indices_positions(
         &self,
-        state: &impl PostGloasBeaconState<P>,
+        state: &BeaconState<P>,
         payload_attestation: &CombinedPayloadAttestation<P>,
         validate_signature: bool,
     ) -> Result<Vec<(ValidatorIndex, Vec<usize>)>> {

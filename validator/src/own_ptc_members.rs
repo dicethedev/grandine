@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use bls::PublicKeyBytes;
 use helper_functions::accessors;
 use logging::warn_with_peers;
@@ -84,11 +84,6 @@ impl OwnPTCMembers {
         state: &BeaconState<P>,
         slot: Slot,
     ) -> Result<Option<Arc<[PTCMember]>>> {
-        // TODO: use `post_gloas` trait
-        let BeaconState::Gloas(state) = state else {
-            return Err(anyhow!("invalid phase {}", state.phase()));
-        };
-
         let signer_snapshot = self.signer.load();
 
         let own_public_keys = signer_snapshot

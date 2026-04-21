@@ -34,7 +34,7 @@ use types::{
     deneb::containers::{BlobIdentifier, BlobSidecar},
     fulu::containers::DataColumnIdentifier,
     gloas::containers::SignedExecutionPayloadBid,
-    nonstandard::{RelativeEpoch, RelativeSlot, ValidationOutcome},
+    nonstandard::{RelativeEpoch, ValidationOutcome},
     phase0::{
         containers::Checkpoint,
         primitives::{H256, Slot},
@@ -861,10 +861,6 @@ impl<P: Preset, W> Run for PreprocessStateTask<P, W> {
                     );
                 }
 
-                if let Err(error) = initialize_ptc_state_cache(&state) {
-                    warn_with_peers!("failed to initialize ptc state's cache values: {error:?}");
-                }
-
                 MutatorMessage::PreprocessedBeaconState { state }.send(&mutator_tx);
             }
             Err(error) => {
@@ -912,25 +908,6 @@ fn initialize_preprocessed_state_cache<P: Preset>(
     accessors::get_or_init_active_validator_indices_shuffled(state, RelativeEpoch::Next, false);
     accessors::get_or_init_total_active_balance(state, false);
     accessors::get_or_init_validator_indices(state, false);
-
-    Ok(())
-}
-
-fn initialize_ptc_state_cache<P: Preset>(state: &CombinedBeaconState<P>) -> Result<()> {
-    match state {
-        CombinedBeaconState::Phase0(_)
-        | CombinedBeaconState::Altair(_)
-        | CombinedBeaconState::Bellatrix(_)
-        | CombinedBeaconState::Capella(_)
-        | CombinedBeaconState::Deneb(_)
-        | CombinedBeaconState::Electra(_)
-        | CombinedBeaconState::Fulu(_) => {}
-        CombinedBeaconState::Gloas(state) => {
-            // Pre-compute PTC cache (no-op for non-Gloas)
-            accessors::get_or_try_init_ptc(state, RelativeSlot::Current, false)?;
-            accessors::get_or_try_init_ptc(state, RelativeSlot::Next, false)?;
-        }
-    }
 
     Ok(())
 }

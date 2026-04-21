@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use bls::traits::Signature as _;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 use helper_functions::accessors;
@@ -88,20 +88,7 @@ impl<P: Preset> Pool<P> {
         messages: impl IntoIterator<Item = PayloadAttestationMessage> + Send,
         beacon_state: Arc<BeaconState<P>>,
     ) -> Result<()> {
-        let ptc_members = match beacon_state.as_ref() {
-            BeaconState::Phase0(_)
-            | BeaconState::Altair(_)
-            | BeaconState::Bellatrix(_)
-            | BeaconState::Capella(_)
-            | BeaconState::Deneb(_)
-            | BeaconState::Electra(_)
-            | BeaconState::Fulu(_) => {
-                return Err(anyhow!(
-                    "Pool::aggregate_messages called with a pre-Gloas BeaconState"
-                ));
-            }
-            BeaconState::Gloas(state) => accessors::get_ptc(state, data.slot)?,
-        };
+        let ptc_members = accessors::get_ptc(&beacon_state, data.slot)?;
 
         let pool_aggregate = self.pool_aggregate(data).await;
         let mut pool_aggregate = pool_aggregate.write().await;
