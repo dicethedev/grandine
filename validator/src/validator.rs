@@ -154,11 +154,11 @@ pub struct Validator<P: Preset, W: Wait> {
     next_graffiti_index: usize,
     attestation_agg_pool: Arc<AttestationAggPool<P, W>>,
     own_beacon_committee_members: Arc<OwnBeaconCommitteeMembers>,
-    own_payload_attestations: OnceCell<Vec<PayloadAttestationMessage>>,
-    own_ptc_members: Arc<OwnPTCMembers>,
     own_singular_attestations: OnceCell<Vec<OwnAttestation<P>>>,
     own_sync_committee_members: OnceCell<Vec<SyncCommitteeMember>>,
     own_sync_committee_subscriptions: OwnSyncCommitteeSubscriptions<P>,
+    own_ptc_members: Arc<OwnPTCMembers>,
+    own_payload_attestations: OnceCell<Vec<PayloadAttestationMessage>>,
     published_own_sync_committee_messages_for: Option<SlotHead<P>>,
     own_aggregators: BTreeMap<AttestationData, Vec<Aggregator>>,
     builder_api: Option<Arc<BuilderApi>>,
@@ -226,6 +226,8 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             signer.clone_arc(),
         ));
 
+        let own_ptc_members = Arc::new(OwnPTCMembers::new(signer.clone_arc()));
+
         Self {
             chain_config: controller.chain_config().clone_arc(),
             validator_config,
@@ -239,11 +241,11 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             next_graffiti_index: 0,
             attestation_agg_pool,
             own_beacon_committee_members,
-            own_payload_attestations: OnceCell::new(),
-            own_ptc_members: Arc::new(OwnPTCMembers::new()),
             own_singular_attestations: OnceCell::new(),
             own_sync_committee_members: OnceCell::new(),
             own_sync_committee_subscriptions: OwnSyncCommitteeSubscriptions::default(),
+            own_ptc_members,
+            own_payload_attestations: OnceCell::new(),
             published_own_sync_committee_messages_for: None,
             own_aggregators: BTreeMap::new(),
             builder_api,
@@ -1700,30 +1702,23 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             return Ok(());
         }
 
-        // Skip attesting if validators has not seen any beacon block for the assigned slot
-        if self
-            .controller
-            .block_root_by_slot(slot_head.slot())?
-            .is_none()
-        {
-            return Ok(());
-        }
-
         let _timer = self
             .metrics
             .as_ref()
             .map(|metrics| metrics.validator_attest_payload_times.start_timer());
 
-        let needs_to_compute_members = self
+        let dependent_root = self
+            .controller
+            .attestation_committee_dependent_root_for_slot(
+                &slot_head.beacon_state,
+                slot_head.slot(),
+            )?;
+
+        let Some(own_members) = self
             .own_ptc_members
-            .needs_to_compute_members_at_slot(slot_head.slot())
-            .await;
-
-        if needs_to_compute_members {
-            self.update_ptc_members(wait_group.clone(), slot_head.beacon_state.clone_arc());
-        }
-
-        let Some(own_members) = self.own_ptc_members.get_at_slot(slot_head.slot()).await else {
+            .get_or_init_at_slot(&slot_head.beacon_state, dependent_root, slot_head.slot())
+            .await
+        else {
             return Ok(());
         };
 
@@ -1735,7 +1730,7 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             return Ok(());
         }
 
-        info_with_peers!(
+        debug_with_peers!(
             "validators [{}] attesting to payload in slot {}",
             own_payload_attestations
                 .iter()
@@ -2121,6 +2116,11 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
         slot_head: &SlotHead<P>,
         own_members: &[PTCMember],
     ) -> Result<&[PayloadAttestationMessage]> {
+        // Skip attesting if validators has not seen any beacon block for the assigned slot
+        let Some(beacon_block_root) = self.controller.block_root_by_slot(slot_head.slot())? else {
+            return Ok(&[]);
+        };
+
         if let Some(own_payload_attestations) = self.own_payload_attestations.get() {
             return Ok(own_payload_attestations);
         }
@@ -2128,7 +2128,7 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
         let (triples, other_data): (Vec<_>, Vec<_>) = tokio::task::block_in_place(|| {
             let data = PayloadAttestationData {
                 slot: slot_head.slot(),
-                beacon_block_root: slot_head.beacon_block_root,
+                beacon_block_root,
                 // TODO: (gloas): set to `true` if signed envelope reference by `block_root` has been seen in fork choice
                 payload_present: true,
                 // TODO: (gloas): set to `true` if blob data is available defined by fork choice
@@ -2286,6 +2286,7 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
     fn spawn_pruning(&self, current_slot: Slot) {
         let current_epoch = misc::compute_epoch_at_slot::<P>(current_slot);
         let own_members = self.own_beacon_committee_members.clone_arc();
+        let own_ptc_members = self.own_ptc_members.clone_arc();
         let slashing_protector = self.slashing_protector.clone_arc();
 
         self.dedicated_executor_low_priority
@@ -2296,6 +2297,7 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
 
                 let up_to_slot = misc::compute_start_slot_at_epoch::<P>(current_epoch);
                 own_members.prune(up_to_slot).await;
+                own_ptc_members.prune(up_to_slot).await;
             })
             .detach()
     }
@@ -2336,41 +2338,6 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
                     .send(&self.subnet_service_tx);
             }
         }
-    }
-
-    fn update_ptc_members(&self, wait_group: W, mut beacon_state: Arc<BeaconState<P>>) {
-        let chain_config = self.chain_config.clone_arc();
-        let controller = self.controller.clone_arc();
-        let current_slot = beacon_state.slot();
-        let own_members = self.own_ptc_members.clone_arc();
-        let own_public_keys = self.own_public_keys();
-
-        tokio::task::spawn(async move {
-            for slot in OwnPTCMembers::slots_to_compute_in_advance(current_slot) {
-                let phase_at_slot = chain_config.phase_at_slot::<P>(slot);
-
-                if chain_config.phase_at_slot::<P>(current_slot) != phase_at_slot {
-                    beacon_state = match controller
-                        .preprocessed_state_at_epoch(chain_config.fork_epoch(phase_at_slot))
-                        .await
-                    {
-                        Ok(with_status) => with_status.value,
-                        Err(error) => {
-                            warn_with_peers!(
-                                "failed to preprocess next fork beacon state for beacon committee subscriptions: {error:?}"
-                            );
-                            break;
-                        }
-                    }
-                }
-
-                own_members
-                    .init_at_slot(&beacon_state, slot, &own_public_keys)
-                    .await;
-            }
-
-            drop(wait_group);
-        });
     }
 
     async fn update_subnet_subscriptions(
@@ -2612,7 +2579,7 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             metrics.set_collection_length(
                 module_path!(),
                 &type_name,
-                "own_beacon_committee_member_slots",
+                "own_beacon_committee_members",
                 self.own_beacon_committee_members.len(),
             );
 
@@ -2624,6 +2591,13 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
                     .get()
                     .map(Vec::len)
                     .unwrap_or(0),
+            );
+
+            metrics.set_collection_length(
+                module_path!(),
+                &type_name,
+                "own_ptc_members",
+                self.own_ptc_members.len(),
             );
 
             self.block_producer.track_collection_metrics().await;

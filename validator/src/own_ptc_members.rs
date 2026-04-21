@@ -1,27 +1,20 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use bls::PublicKeyBytes;
 use helper_functions::accessors;
 use logging::warn_with_peers;
+use scc::HashMap as SccHashMap;
+use signer::Signer;
+use ssz::H256;
 use std_ext::ArcExt as _;
 use tap::{Conv as _, Pipe as _};
-use tokio::sync::Mutex;
-use typenum::{True, U1, U8, Unsigned as _, assert_type, op};
+use tracing::instrument;
 use types::{
     combined::BeaconState,
     phase0::primitives::{Slot, ValidatorIndex},
     preset::Preset,
-    traits::PostGloasBeaconState,
 };
-
-type ComputeInAdvanceSlots = U8;
-
-#[expect(clippy::declare_interior_mutable_const)]
-const NONE_MUTEX: Mutex<Option<PTCMembers>> = Mutex::const_new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PTCMember {
@@ -30,128 +23,103 @@ pub struct PTCMember {
     pub position_in_committee: usize,
 }
 
-#[derive(Debug)]
-struct PTCMembers {
-    slot: Slot,
-    members: Arc<[PTCMember]>,
-}
-
 pub struct OwnPTCMembers {
-    slots: [Mutex<Option<PTCMembers>>; ComputeInAdvanceSlots::USIZE],
+    signer: Arc<Signer>,
+    members: SccHashMap<(H256, Slot), Arc<[PTCMember]>>,
 }
 
 impl OwnPTCMembers {
-    pub const fn new() -> Self {
+    pub fn new(signer: Arc<Signer>) -> Self {
         Self {
-            slots: [NONE_MUTEX; ComputeInAdvanceSlots::USIZE],
+            signer,
+            members: SccHashMap::new(),
         }
     }
 
-    pub async fn get_at_slot(&self, slot: Slot) -> Option<Arc<[PTCMember]>> {
-        let slot_index = slot_index_from_slot(slot);
-        let slot_members_opt = self.slots[slot_index].lock().await;
-
-        slot_members_opt.as_ref().and_then(|slot_members| {
-            (slot_members.slot == slot).then_some(slot_members.members.clone_arc())
-        })
+    pub fn len(&self) -> usize {
+        self.members.len()
     }
 
-    pub async fn init_at_slot<P: Preset>(
+    #[instrument(skip_all, level = "debug", fields(slot = slot, dependent_root = ?dependent_root))]
+    pub async fn get_or_init_at_slot<P: Preset>(
+        &self,
+        state: &BeaconState<P>,
+        dependent_root: H256,
+        slot: Slot,
+    ) -> Option<Arc<[PTCMember]>> {
+        if let Some(members) = self.members.get_async(&(dependent_root, slot)).await {
+            return Some(members.clone_arc());
+        }
+
+        match self.compute_members_at_slot(state, slot) {
+            Ok(members) => {
+                if let Some(members) = members {
+                    self.members
+                        .upsert_async((dependent_root, slot), members.clone_arc())
+                        .await;
+
+                    Some(members)
+                } else {
+                    None
+                }
+            }
+            Err(error) => {
+                warn_with_peers!(
+                    "failed to compute own beacon committee members at slot {slot}: {error:?}"
+                );
+                None
+            }
+        }
+    }
+
+    pub async fn prune(&self, up_to_slot: Slot) {
+        self.members
+            .retain_async(|(_, slot), _| *slot >= up_to_slot)
+            .await
+    }
+
+    #[instrument(skip_all, level = "debug", fields(slot = slot))]
+    fn compute_members_at_slot<P: Preset>(
         &self,
         state: &BeaconState<P>,
         slot: Slot,
-        own_public_keys: &HashSet<PublicKeyBytes>,
-    ) {
-        let slot_index = slot_index_from_slot(slot);
-        let mut slot_members_opt = self.slots[slot_index].lock().await;
-
-        let ptc_members = match state {
-            BeaconState::Phase0(_)
-            | BeaconState::Altair(_)
-            | BeaconState::Bellatrix(_)
-            | BeaconState::Capella(_)
-            | BeaconState::Deneb(_)
-            | BeaconState::Electra(_)
-            | BeaconState::Fulu(_) => return,
-            BeaconState::Gloas(state) => compute_members_at_slot(state, slot, own_public_keys),
+    ) -> Result<Option<Arc<[PTCMember]>>> {
+        // TODO: use `post_gloas` trait
+        let BeaconState::Gloas(state) = state else {
+            return Err(anyhow!("invalid phase {}", state.phase()));
         };
 
-        *slot_members_opt = match ptc_members {
-            Ok(members) => members.map(|members| PTCMembers { slot, members }),
-            Err(error) => {
-                warn_with_peers!("failed to compute own ptc members at slot {slot}: {error:?}");
-                None
-            }
-        };
-    }
+        let signer_snapshot = self.signer.load();
 
-    pub async fn needs_to_compute_members_at_slot(&self, slot: Slot) -> bool {
-        let slot_index = slot_index_from_slot(slot);
+        let own_public_keys = signer_snapshot
+            .keys()
+            .copied()
+            .filter_map(|public_key| {
+                let validator_index = accessors::index_of_public_key(state, &public_key)?;
+                Some((validator_index, public_key))
+            })
+            .collect::<HashMap<_, _>>();
 
-        if let Some(slot_members) = self.slots[slot_index].lock().await.as_ref()
-            && slot_members.slot == slot
-        {
-            return false;
+        if own_public_keys.is_empty() {
+            return Ok(None);
         }
 
-        true
+        accessors::get_ptc(state, slot)?
+            .into_iter()
+            .zip(0..)
+            .filter_map(|(validator_index, position_in_committee)| {
+                own_public_keys
+                    .get(&validator_index)
+                    .copied()
+                    .map(|public_key| PTCMember {
+                        public_key,
+                        validator_index,
+                        position_in_committee,
+                    })
+            })
+            .collect::<Vec<_>>()
+            .conv::<Arc<[_]>>()
+            .pipe(Some)
+            .pipe(Ok)
     }
-
-    pub fn slots_to_compute_in_advance(current_slot: Slot) -> impl Iterator<Item = Slot> {
-        current_slot..current_slot + ComputeInAdvanceSlots::U64
-    }
-}
-
-#[cfg(target_pointer_width = "32")]
-use typenum::U32;
-
-#[cfg(target_pointer_width = "64")]
-use typenum::U64;
-
-#[cfg(target_pointer_width = "32")]
-assert_type!(op!(ComputeInAdvanceSlots < U1 << U32));
-
-#[cfg(target_pointer_width = "64")]
-assert_type!(op!(ComputeInAdvanceSlots < U1 << U64));
-
-fn slot_index_from_slot(slot: Slot) -> usize {
-    usize::try_from(slot % ComputeInAdvanceSlots::U64).expect(
-        "ComputeInAdvanceSlots should always fit in usize due to compile-time assertions above",
-    )
-}
-
-fn compute_members_at_slot<P: Preset>(
-    state: &impl PostGloasBeaconState<P>,
-    slot: Slot,
-    own_public_keys: &HashSet<PublicKeyBytes>,
-) -> Result<Option<Arc<[PTCMember]>>> {
-    if own_public_keys.is_empty() {
-        return Ok(None);
-    }
-
-    let own_validator_indices = own_public_keys
-        .iter()
-        .filter_map(|public_key| {
-            let validator_index = accessors::index_of_public_key(state, public_key)?;
-            Some((validator_index, public_key))
-        })
-        .collect::<HashMap<_, _>>();
-
-    accessors::get_ptc(state, slot)?
-        .into_iter()
-        .zip(0..)
-        .filter_map(|(validator_index, position_in_committee)| {
-            own_validator_indices
-                .get(&validator_index)
-                .copied()
-                .map(|public_key| PTCMember {
-                    public_key: *public_key,
-                    validator_index,
-                    position_in_committee,
-                })
-        })
-        .collect::<Vec<_>>()
-        .conv::<Arc<[_]>>()
-        .pipe(Some)
-        .pipe(Ok)
 }
