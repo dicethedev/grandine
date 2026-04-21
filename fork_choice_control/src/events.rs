@@ -24,9 +24,7 @@ use types::{
         primitives::{BlobIndex, KzgCommitment, VersionedHash},
     },
     fulu::primitives::ColumnIndex,
-    gloas::containers::{
-        PayloadAttestationData, PayloadAttestationMessage, SignedExecutionPayloadBid,
-    },
+    gloas::containers::{PayloadAttestationMessage, SignedExecutionPayloadBid},
     nonstandard::Phase,
     phase0::{
         containers::{Checkpoint, ProposerSlashing, SignedVoluntaryExit},
@@ -311,9 +309,11 @@ impl<P: Preset> EventChannels<P> {
 
     pub fn send_payload_attestation_event(
         &self,
+        phase: Phase,
         payload_attestation: &Arc<PayloadAttestationMessage>,
     ) {
-        if let Err(error) = self.send_payload_attestation_event_internal(payload_attestation) {
+        if let Err(error) = self.send_payload_attestation_event_internal(phase, payload_attestation)
+        {
             warn_with_peers!("unable to send payload attestation event: {error}");
         }
     }
@@ -539,10 +539,12 @@ impl<P: Preset> EventChannels<P> {
 
     fn send_payload_attestation_event_internal(
         &self,
+        phase: Phase,
         payload_attestation: &Arc<PayloadAttestationMessage>,
     ) -> Result<()> {
         if self.payload_attestations.receiver_count() > 0 {
-            let payload_attestation_event = PayloadAttestationEvent::new(payload_attestation);
+            let payload_attestation_event =
+                PayloadAttestationEvent::new(phase, payload_attestation);
             let event = Event::PayloadAttestation(payload_attestation_event);
             self.payload_attestations.send(event)?;
         }
@@ -774,17 +776,19 @@ impl HeadEvent {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct PayloadAttestationEvent {
-    #[serde(with = "serde_utils::string_or_native")]
-    pub validator_index: ValidatorIndex,
-    #[serde(flatten)]
-    pub data: PayloadAttestationData,
+    pub version: Phase,
+    pub data: PayloadAttestationMessage,
 }
 
 impl PayloadAttestationEvent {
-    fn new(payload_attestation: &Arc<PayloadAttestationMessage>) -> Self {
+    fn new(phase: Phase, payload_attestation: &Arc<PayloadAttestationMessage>) -> Self {
         Self {
-            validator_index: payload_attestation.validator_index,
-            data: payload_attestation.data,
+            version: phase,
+            data: PayloadAttestationMessage {
+                validator_index: payload_attestation.validator_index,
+                data: payload_attestation.data,
+                signature: payload_attestation.signature,
+            },
         }
     }
 }

@@ -58,7 +58,6 @@ use types::{
     combined::{BeaconState, DataColumnSidecar, ExecutionPayloadParams, SignedBeaconBlock},
     deneb::containers::{BlobIdentifier, BlobSidecar},
     fulu::{containers::DataColumnIdentifier, primitives::ColumnIndex},
-    gloas::containers::CombinedPayloadAttestation,
     nonstandard::{PayloadStatus, Phase, RelativeEpoch, ValidationOutcome},
     phase0::{
         containers::Checkpoint,
@@ -1969,18 +1968,18 @@ where
                 let data = payload_attestation.data();
                 let is_from_block = origin.is_from_block();
 
-                if let CombinedPayloadAttestation::Message(payload_attestation_message) =
-                    Arc::unwrap_or_clone(payload_attestation)
-                {
+                if let Some(payload_attestation_message) = payload_attestation.message() {
                     if origin.should_generate_event() {
-                        self.event_channels
-                            .send_payload_attestation_event(&payload_attestation_message);
+                        self.event_channels.send_payload_attestation_event(
+                            self.store.head().block.phase(),
+                            payload_attestation_message,
+                        );
                     }
 
                     if origin.send_to_validator() {
                         self.send_to_validator(ValidatorMessage::ValidPayloadAttestation(
                             wait_group.clone(),
-                            payload_attestation_message,
+                            payload_attestation_message.clone_arc(),
                         ));
                     }
                 }
