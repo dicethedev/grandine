@@ -647,11 +647,15 @@ where
         .await
     }
 
-    pub fn on_payload_attestation(&self, payload_attestation: PayloadAttestationItem<P>) {
+    pub fn on_payload_attestation(
+        &self,
+        wait_group: W,
+        payload_attestation: PayloadAttestationItem<P>,
+    ) {
         self.spawn(PayloadAttestationTask {
             store_snapshot: self.owned_store_snapshot(),
             mutator_tx: self.owned_mutator_tx(),
-            wait_group: self.owned_wait_group(),
+            wait_group,
             payload_attestation,
             metrics: self.metrics.clone(),
         })

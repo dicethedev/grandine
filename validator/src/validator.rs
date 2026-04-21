@@ -25,7 +25,10 @@ use eth1_api::ApiController;
 use eth2_libp2p::GossipId;
 use features::Feature;
 use fork_choice_control::{Event, EventChannels, Topic, ValidatorMessage, Wait};
-use fork_choice_store::{AttestationItem, AttestationOrigin, ChainLink, StateCacheError};
+use fork_choice_store::{
+    AttestationItem, AttestationOrigin, ChainLink, PayloadAttestationItem,
+    PayloadAttestationOrigin, StateCacheError,
+};
 use futures::{
     channel::{
         mpsc::{UnboundedReceiver, UnboundedSender},
@@ -1739,9 +1742,18 @@ impl<P: Preset, W: Wait + Sync> Validator<P, W> {
             slot_head.slot(),
         );
 
-        for own_payload_attestation in own_payload_attestations {
-            ValidatorToP2p::PublishPayloadAttestation(Arc::new(*own_payload_attestation))
-                .send(&self.p2p_tx);
+        for own_payload_attestation in own_payload_attestations.iter().copied() {
+            let payload_attestation = Arc::new(own_payload_attestation);
+
+            self.controller.on_payload_attestation(
+                wait_group.clone(),
+                PayloadAttestationItem::unverified(
+                    Arc::new(payload_attestation.clone_arc().into()),
+                    PayloadAttestationOrigin::Own,
+                ),
+            );
+
+            ValidatorToP2p::PublishPayloadAttestation(payload_attestation).send(&self.p2p_tx);
         }
 
         let next_proposer_index = tokio::task::block_in_place(|| slot_head.next_proposer_index())?;
