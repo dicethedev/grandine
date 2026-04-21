@@ -1223,6 +1223,24 @@ impl<P: Preset, I> AttestationValidationError<P, I> {
 
 #[derive(Error, Debug)]
 pub enum PayloadAttestationValidationError<P: Preset> {
+    #[error(
+        "block payload attestation's slot is not for the previous slot \
+            (state_slot: {in_state}, attestation_slot: {in_block}, payload_attestation: {payload_attestation:?})"
+    )]
+    BlockPayloadAttestationInvalidSlot {
+        in_state: Slot,
+        in_block: Slot,
+        payload_attestation: Box<PayloadAttestationItem<P>>,
+    },
+    #[error(
+        "block payload attestation's beacon block root is not parent block root \
+            (parent_root: {parent_root}, attestation_block_root: {block_root}, payload_attestation: {payload_attestation:?})"
+    )]
+    BlockPayloadAttestationMismatchParentRoot {
+        parent_root: H256,
+        block_root: H256,
+        payload_attestation: Box<PayloadAttestationItem<P>>,
+    },
     #[error("payload attestation's block is invalid: {payload_attestation:?}")]
     PayloadAttestationInvalidBlock {
         payload_attestation: Box<PayloadAttestationItem<P>>,
@@ -1242,7 +1260,15 @@ impl<P: Preset> PayloadAttestationValidationError<P> {
     #[must_use]
     pub fn payload_attestation(self) -> PayloadAttestationItem<P> {
         match self {
-            Self::PayloadAttestationInvalidBlock {
+            Self::BlockPayloadAttestationInvalidSlot {
+                payload_attestation,
+                ..
+            }
+            | Self::BlockPayloadAttestationMismatchParentRoot {
+                payload_attestation,
+                ..
+            }
+            | Self::PayloadAttestationInvalidBlock {
                 payload_attestation,
             }
             | Self::PayloadAttestationForPreGloasBlock {

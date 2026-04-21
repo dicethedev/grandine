@@ -2806,9 +2806,30 @@ impl<P: Preset, S: Storage<P>> Store<P, S> {
             ));
         };
 
-        // > PTC votes can only change the vote for their assigned beacon block, return early otherwise
-        if data.slot != state.slot() {
-            return Ok(PayloadAttestationAction::Ignore(payload_attestation));
+        if payload_attestation.origin.is_from_block() {
+            let parent_root = state.latest_block_header().parent_root;
+
+            // > Check that the attestation is for the parent beacon block
+            if data.beacon_block_root != parent_root {
+                return Err(
+                    PayloadAttestationValidationError::BlockPayloadAttestationMismatchParentRoot {
+                        parent_root,
+                        block_root: data.beacon_block_root,
+                        payload_attestation: Box::new(payload_attestation),
+                    },
+                );
+            }
+
+            // > Check that the attestation is for the previous slot
+            if data.slot + 1 != state.slot() {
+                return Err(
+                    PayloadAttestationValidationError::BlockPayloadAttestationInvalidSlot {
+                        in_state: state.slot(),
+                        in_block: data.slot,
+                        payload_attestation: Box::new(payload_attestation),
+                    },
+                );
+            }
         }
 
         // [REJECT] The message's validator index is within the payload committee in get_ptc(state, data.slot).
