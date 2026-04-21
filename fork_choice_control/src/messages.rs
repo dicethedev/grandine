@@ -12,7 +12,7 @@ use fork_choice_store::{
     AggregateAndProofOrigin, AttestationAction, AttestationItem, AttestationValidationError,
     AttesterSlashingOrigin, BlobSidecarAction, BlobSidecarOrigin, BlockAction, BlockOrigin,
     ChainLink, DataColumnSidecarAction, DataColumnSidecarOrigin, ExecutionPayloadBidAction,
-    ExecutionPayloadBidOrigin, PayloadAttestationAction, PayloadAttestationValidationError,
+    ExecutionPayloadBidOrigin,
 };
 use logging::debug_with_peers;
 use serde::Serialize;
@@ -114,7 +114,7 @@ pub enum MutatorMessage<P: Preset, W> {
     },
     BlockPayloadAttestations {
         wait_group: W,
-        results: Vec<Result<PayloadAttestationAction<P>, PayloadAttestationValidationError<P>>>,
+        results: Vec<VerifyPayloadAttestationResult<P>>,
     },
     AttesterSlashing {
         wait_group: W,

@@ -22,7 +22,6 @@ use helper_functions::{
 use logging::{debug_with_peers, warn_with_peers};
 use prometheus_metrics::Metrics;
 use pubkey_cache::PubkeyCache;
-use rayon::iter::{IntoParallelIterator as _, ParallelIterator as _};
 use ssz::SszHash as _;
 use tracing::{Span, instrument};
 use types::{
@@ -646,7 +645,7 @@ impl<P: Preset, W> Run for PayloadAttestationBatchTask<P, W> {
         });
 
         let results = payload_attestations
-            .into_par_iter()
+            .into_iter()
             .map(|payload_attestation| {
                 store_snapshot.validate_payload_attestation(payload_attestation, false)
             })

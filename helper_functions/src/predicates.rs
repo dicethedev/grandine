@@ -459,7 +459,7 @@ pub fn is_attestation_same_slot<P: Preset>(
 pub fn validate_constructed_indexed_payload_attestation<P: Preset>(
     config: &Config,
     pubkey_cache: &PubkeyCache,
-    state: &(impl BeaconState<P> + ?Sized),
+    state: &impl BeaconState<P>,
     attestation: &IndexedPayloadAttestation<P>,
     verifier: impl Verifier,
 ) -> Result<()> {
@@ -469,7 +469,7 @@ pub fn validate_constructed_indexed_payload_attestation<P: Preset>(
 pub fn validate_received_indexed_payload_attestation<P: Preset>(
     config: &Config,
     pubkey_cache: &PubkeyCache,
-    state: &(impl BeaconState<P> + ?Sized),
+    state: &impl BeaconState<P>,
     attestation: &IndexedPayloadAttestation<P>,
     verifier: impl Verifier,
 ) -> Result<()> {
@@ -481,7 +481,7 @@ pub fn validate_received_indexed_payload_attestation<P: Preset>(
 fn validate_indexed_payload_attestation<P: Preset>(
     config: &Config,
     pubkey_cache: &PubkeyCache,
-    state: &(impl BeaconState<P> + ?Sized),
+    state: &impl BeaconState<P>,
     attestation: &IndexedPayloadAttestation<P>,
     mut verifier: impl Verifier,
     validate_indices_sorted: bool,

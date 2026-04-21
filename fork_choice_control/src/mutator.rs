@@ -38,8 +38,8 @@ use fork_choice_store::{
     BlobSidecarAction, BlobSidecarOrigin, BlockAction, BlockOrigin, ChainLink,
     DataColumnSidecarAction, DataColumnSidecarOrigin, Error, ExecutionPayloadBidAction,
     ExecutionPayloadBidOrigin, PayloadAction, PayloadAttestationAction, PayloadAttestationItem,
-    PayloadAttestationOrigin, PayloadAttestationValidationError, StateCacheProcessor, Store,
-    ValidAttestation, ValidPayloadAttestation,
+    PayloadAttestationOrigin, StateCacheProcessor, Store, ValidAttestation,
+    ValidPayloadAttestation,
 };
 use futures::channel::{mpsc::Sender as MultiSender, oneshot::Sender as OneshotSender};
 use helper_functions::{accessors, misc, predicates, verifier::NullVerifier};
@@ -1463,7 +1463,7 @@ where
     fn handle_block_payload_attestations(
         &mut self,
         wait_group: &W,
-        results: Vec<Result<PayloadAttestationAction<P>, PayloadAttestationValidationError<P>>>,
+        results: Vec<VerifyPayloadAttestationResult<P>>,
     ) -> Result<()> {
         let accepted = results
             .into_iter()
