@@ -34,12 +34,17 @@ use std::sync::Mutex;
 #[cfg(test)]
 use ::{
     execution_engine::MockExecutionEngine,
-    fork_choice_store::{AttestationItem, AttestationOrigin},
-    types::combined::Attestation,
+    fork_choice_store::{
+        AttestationItem, AttestationOrigin, PayloadAttestationItem, PayloadAttestationOrigin,
+    },
+    types::{
+        combined::Attestation,
+        gloas::containers::CombinedPayloadAttestation,
+    },
 };
 
 #[cfg(test)]
-use crate::tasks::AttestationTask;
+use crate::tasks::{AttestationTask, PayloadAttestationTask};
 
 pub type AttestationVerifierDrain<P> = Drain<AttestationVerifierMessage<P, WaitGroup>>;
 
@@ -235,6 +240,22 @@ impl<P: Preset> TestController<P> {
             mutator_tx: self.owned_mutator_tx(),
             wait_group: self.owned_wait_group(),
             attestation: AttestationItem::unverified(attestation, AttestationOrigin::Test),
+            metrics: None,
+        })
+    }
+
+    pub(crate) fn on_test_payload_attestation(
+        &self,
+        payload_attestation: Arc<CombinedPayloadAttestation<P>>,
+    ) {
+        self.spawn(PayloadAttestationTask {
+            store_snapshot: self.owned_store_snapshot(),
+            mutator_tx: self.owned_mutator_tx(),
+            wait_group: self.owned_wait_group(),
+            payload_attestation: PayloadAttestationItem::unverified(
+                payload_attestation,
+                PayloadAttestationOrigin::Own,
+            ),
             metrics: None,
         })
     }

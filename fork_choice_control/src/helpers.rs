@@ -20,7 +20,7 @@ use types::{
     config::Config,
     deneb::containers::{BlobIdentifier, BlobSidecar},
     gloas::{
-        containers::SignedExecutionPayloadEnvelope,
+        containers::{CombinedPayloadAttestation, SignedExecutionPayloadEnvelope},
         primitives::PayloadStatus as ExecutionPayloadStatus,
     },
     nonstandard::{PayloadStatus, Phase, TimedPowBlock},
@@ -508,6 +508,36 @@ impl<P: Preset> Context<P> {
         self.controller().on_test_attestation(Arc::new(attestation));
         self.controller().wait_for_tasks();
         self.next_p2p_message().unwrap_none();
+    }
+
+    pub fn on_valid_payload_attestation(
+        &mut self,
+        payload_attestation: Arc<CombinedPayloadAttestation<P>>,
+    ) {
+        assert!(matches!(
+            self.on_test_payload_attestation(payload_attestation),
+            Some(P2pMessage::Accept(_)),
+        ));
+    }
+
+    pub fn on_invalid_payload_attestation(
+        &mut self,
+        payload_attestation: Arc<CombinedPayloadAttestation<P>>,
+    ) {
+        assert!(matches!(
+            self.on_test_payload_attestation(payload_attestation),
+            Some(P2pMessage::Reject(_, _) | P2pMessage::Ignore(_)),
+        ));
+    }
+
+    pub fn on_test_payload_attestation(
+        &mut self,
+        payload_attestation: Arc<CombinedPayloadAttestation<P>>,
+    ) -> Option<P2pMessage<P>> {
+        self.controller()
+            .on_test_payload_attestation(payload_attestation);
+        self.controller().wait_for_tasks();
+        self.next_p2p_message()
     }
 
     pub fn on_attester_slashing(&mut self, attester_slashing: AttesterSlashing<P>) {

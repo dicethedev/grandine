@@ -19,7 +19,7 @@ use types::{
     },
     config::Config,
     deneb::primitives::{Blob, KzgProof},
-    gloas::containers::SignedExecutionPayloadEnvelope,
+    gloas::{containers::{CombinedPayloadAttestation, PayloadAttestation, SignedExecutionPayloadEnvelope}, primitives::PayloadStatus},
     nonstandard::{Phase, TimedPowBlock},
     phase0::{
         containers::Checkpoint,
@@ -39,12 +39,19 @@ enum Step {
     },
     Attestation {
         attestation: PathBuf,
+        #[serde(default = "serde_aux::field_attributes::bool_true")]
+        valid: bool,
     },
     Block {
         block: PathBuf,
         blobs: Option<PathBuf>,
         columns: Option<Vec<PathBuf>>,
         proofs: Option<Vec<KzgProof>>,
+        #[serde(default = "serde_aux::field_attributes::bool_true")]
+        valid: bool,
+    },
+    PayloadAttestation {
+        payload_attestation: PathBuf,
         #[serde(default = "serde_aux::field_attributes::bool_true")]
         valid: bool,
     },
@@ -59,6 +66,8 @@ enum Step {
     PayloadStatus(PayloadStatusWithBlockHash),
     AttesterSlashing {
         attester_slashing: PathBuf,
+        #[serde(default = "serde_aux::field_attributes::bool_true")]
+        valid: bool,
     },
     Checks {
         checks: Box<Checks>,
@@ -75,6 +84,8 @@ struct Checks {
     justified_checkpoint: Option<Checkpoint>,
     finalized_checkpoint: Option<Checkpoint>,
     proposer_boost_root: Option<H256>,
+    // TODO: assert viable_for_head_roots_and_weights 
+    viable_for_head_roots_and_weights: Option<Vec<ViableHeadRootAndWeight>>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +93,14 @@ struct Checks {
 struct HeadCheck {
     slot: Slot,
     root: H256,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViableHeadRootAndWeight {
+    root: H256,
+    payload_status: Option<PayloadStatus>,
+    weight: u64,
 }
 
 // Starting with `consensus-specs` version 1.3.0-rc.4,
@@ -156,7 +175,13 @@ struct HeadCheck {
     ["consensus-spec-tests/tests/minimal/fulu/fork_choice/on_block/*/*"]                        [fulu_minimal_on_block]                        [Minimal] [Fulu];
     ["consensus-spec-tests/tests/minimal/fulu/fork_choice/reorg/*/*"]                           [fulu_minimal_reorg]                           [Minimal] [Fulu];
     ["consensus-spec-tests/tests/minimal/fulu/fork_choice/withholding/*/*"]                     [fulu_minimal_withholding]                     [Minimal] [Fulu];
-    ["consensus-spec-tests/tests/mainnet/fulu/sync/*/*/*"]                                      [fulu_sync_mainnet]                            [Mainnet] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/attester_slashing_test/*/*"] [fulu_minimal_compliance_attester_slashing]   [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/block_cover_test/*/*"]      [fulu_minimal_compliance_block_cover]          [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/block_tree_test/*/*"]       [fulu_minimal_compliance_block_tree]           [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/block_weight_test/*/*"]     [fulu_minimal_compliance_block_weight]         [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/invalid_message_test/*/*"]  [fulu_minimal_compliance_invalid_message]      [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/minimal/fulu/fork_choice_compliance/shuffling_test/*/*"]        [fulu_minimal_compliance_shuffling]            [Minimal] [Fulu];
+    ["consensus-spec-tests/tests/mainnet/fulu/sync/*/*/*"]                                       [fulu_sync_mainnet]                            [Mainnet] [Fulu];
     ["consensus-spec-tests/tests/minimal/fulu/sync/*/*/*"]                                      [fulu_sync_minimal]                            [Minimal] [Fulu];
     ["consensus-spec-tests/tests/mainnet/gloas/fork_choice/ex_ante/*/*"]                        [gloas_mainnet_ex_ante]                        [Mainnet] [Gloas];
     ["consensus-spec-tests/tests/mainnet/gloas/fork_choice/get_head/*/*"]                       [gloas_mainnet_get_head]                       [Mainnet] [Gloas];
@@ -170,6 +195,12 @@ struct HeadCheck {
     ["consensus-spec-tests/tests/minimal/gloas/fork_choice/on_execution_payload_envelope/*/*"]  [gloas_minimal_on_execution_payload_envelope]  [Minimal] [Gloas];
     ["consensus-spec-tests/tests/minimal/gloas/fork_choice/reorg/*/*"]                          [gloas_minimal_reorg]                          [Minimal] [Gloas];
     ["consensus-spec-tests/tests/minimal/gloas/fork_choice/withholding/*/*"]                    [gloas_minimal_withholding]                    [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/attester_slashing_test/*/*"] [gloas_minimal_compliance_attester_slashing] [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/block_cover_test/*/*"]    [gloas_minimal_compliance_block_cover]         [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/block_tree_test/*/*"]     [gloas_minimal_compliance_block_tree]          [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/block_weight_test/*/*"]   [gloas_minimal_compliance_block_weight]        [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/invalid_message_test/*/*"] [gloas_minimal_compliance_invalid_message]    [Minimal] [Gloas];
+    ["consensus-spec-tests/tests/minimal/gloas/fork_choice_compliance/shuffling_test/*/*"]      [gloas_minimal_compliance_shuffling]           [Minimal] [Gloas];
 )]
 #[test_resources(glob)]
 fn function_name(case: Case<'_>) {
@@ -214,7 +245,7 @@ async fn run_case<P: Preset>(config: &Arc<Config>, case: Case<'_>) {
                 let tick = tick_at_time(tick);
                 context.on_tick(tick);
             }
-            Step::Attestation { attestation } => {
+            Step::Attestation { attestation, valid } => {
                 let attestation = case.ssz::<_, Attestation<P>>(config, attestation);
                 context.on_test_attestation(attestation);
             }
@@ -299,6 +330,22 @@ async fn run_case<P: Preset>(config: &Arc<Config>, case: Case<'_>) {
                     context.on_invalid_block(&block);
                 }
             }
+            Step::PayloadAttestation {
+                payload_attestation,
+                valid,
+            } => {
+                if valid {
+                    let attestation = case
+                        .ssz::<_, PayloadAttestation<P>>(config.as_ref(), payload_attestation);
+                    let combined = Arc::new(CombinedPayloadAttestation::Attestation(attestation));
+
+                    if valid {
+                        context.on_valid_payload_attestation(combined);
+                    } else {
+                        context.on_invalid_payload_attestation(combined);
+                    }
+                }
+            }
             Step::ExecutionPayload {
                 execution_payload,
                 valid,
@@ -337,6 +384,7 @@ async fn run_case<P: Preset>(config: &Arc<Config>, case: Case<'_>) {
             }
             Step::AttesterSlashing {
                 attester_slashing: file_name,
+                valid,
             } => {
                 let attester_slashing = match config.genesis_phase() {
                     Phase::Phase0
@@ -360,6 +408,7 @@ async fn run_case<P: Preset>(config: &Arc<Config>, case: Case<'_>) {
                     justified_checkpoint,
                     finalized_checkpoint,
                     proposer_boost_root,
+                    viable_for_head_roots_and_weights: _,
                 } = *checks;
 
                 if let Some(HeadCheck { slot, root }) = head {
